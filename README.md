@@ -10,7 +10,16 @@ This server handles authentication requests from both the game client (via the F
 
 **You don't need to run your own auth server!** A public test server is available at `sanasol.ws` and is used by default in all related projects.
 
-Simply use the [Hytale-F2P launcher](https://github.com/sanasol/Hytale-F2P/tree/patched-auth-server) and [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) with default settings - they're pre-configured to use `sanasol.ws`.
+### Quick Test (No Setup Required)
+
+1. **Download the pre-built launcher**: [Hytale-F2P v2.0.4-auth-sanasol.ws](https://github.com/sanasol/Hytale-F2P/releases/tag/v2.0.4-auth-sanasol.ws)
+2. **Connect to the public game server**: `ht.vboro.de:5720`
+
+That's it! No auth server or game server setup needed for testing.
+
+### Build from Source
+
+Alternatively, use the [Hytale-F2P launcher source](https://github.com/sanasol/Hytale-F2P/tree/patched-auth-server) and [hytale-server-docker](https://github.com/sanasol/hytale-server-docker) with default settings - they're pre-configured to use `sanasol.ws`.
 
 > **Note**: The public server is for testing purposes. For production use or privacy, set up your own server using this repository.
 

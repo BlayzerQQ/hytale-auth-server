@@ -1,0 +1,20 @@
+# Hytale Auth Server - Simple Docker Compose (no HTTPS)
+#
+# For local development or when using an external reverse proxy
+# The server runs on port 3000
+
+services:
+  hytale-auth:
+    build: .
+    environment:
+      # IMPORTANT: Your domain must be exactly 10 characters (same as hytale.com)
+      DOMAIN: "sanasol.ws"
+      PORT: "3000"
+      DATA_DIR: "/app/data"
+      ASSETS_PATH: "/app/assets/Assets.zip"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+      - ./assets:/app/assets
+    restart: unless-stopped

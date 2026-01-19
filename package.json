@@ -1,0 +1,12 @@
+{
+  "name": "hytale-auth-server",
+  "version": "1.0.0",
+  "description": "Hytale F2P authentication server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {},
+  "keywords": ["hytale", "auth"],
+  "license": "MIT"
+}

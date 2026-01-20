@@ -421,14 +421,11 @@ function routeRequest(req, res, url, body, headers) {
   const accessToken = generateIdentityToken(uuid, name);
   sendJson(res, 200, {
     success: true,
-    identity_token: accessToken,
-    session_token: generateSessionToken(uuid),
+    identityToken: accessToken,
+    sessionToken: generateSessionToken(uuid),
     authorizationGrant: authGrant,
-    AuthorizationGrant: authGrant,
-    access_token: accessToken,
     accessToken: accessToken,
-    AccessToken: accessToken,
-    token_type: 'Bearer',
+    tokenType: 'Bearer',
     user: { uuid, name, premium: true }
   });
 }
@@ -478,10 +475,7 @@ function handleAuthorizationGrant(req, res, body, uuid, name, headers) {
 
   sendJson(res, 200, {
     authorizationGrant: authGrant,
-    AuthorizationGrant: authGrant,
-    authorization_grant: authGrant,
-    expiresAt: expiresAt,
-    ExpiresAt: expiresAt
+    expiresAt: expiresAt
   });
 }
 
@@ -539,17 +533,11 @@ function handleTokenExchange(req, res, body, uuid, name, headers) {
   const expiresAt = new Date(Date.now() + 36000 * 1000).toISOString();
 
   sendJson(res, 200, {
-    access_token: accessToken,
     accessToken: accessToken,
-    AccessToken: accessToken,
-    token_type: 'Bearer',
     tokenType: 'Bearer',
-    expires_in: 36000,
     expiresIn: 36000,
-    refresh_token: refreshToken,
     refreshToken: refreshToken,
     expiresAt: expiresAt,
-    ExpiresAt: expiresAt,
     scope: 'hytale:server hytale:client'
   });
 }
@@ -567,11 +555,8 @@ function handleGameSessionNew(req, res, body, uuid, name) {
 
   sendJson(res, 200, {
     sessionToken: sessionToken,
-    SessionToken: sessionToken,
     identityToken: identityToken,
-    IdentityToken: identityToken,
-    expiresAt: expiresAt,
-    ExpiresAt: expiresAt
+    expiresAt: expiresAt
   });
 }
 
@@ -580,9 +565,9 @@ function handleGameSessionRefresh(req, res, body, uuid, name, headers) {
   console.log('game-session/refresh:', uuid, name);
 
   // Extract info from existing session token if provided
-  if (body.sessionToken || body.SessionToken) {
+  if (body.sessionToken) {
     try {
-      const token = body.sessionToken || body.SessionToken;
+      const token = body.sessionToken;
       const parts = token.split('.');
       if (parts.length >= 2) {
         const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
@@ -600,11 +585,8 @@ function handleGameSessionRefresh(req, res, body, uuid, name, headers) {
 
   sendJson(res, 200, {
     sessionToken: sessionToken,
-    SessionToken: sessionToken,
     identityToken: identityToken,
-    IdentityToken: identityToken,
-    expiresAt: expiresAt,
-    ExpiresAt: expiresAt
+    expiresAt: expiresAt
   });
 }
 
@@ -630,12 +612,9 @@ function handleGameSessionChild(req, res, body, uuid, name) {
   const expiresAt = new Date(Date.now() + 86400 * 1000).toISOString();
 
   sendJson(res, 200, {
-    ExpiresAt: expiresAt,
-    IdentityToken: childIdentityToken,
-    SessionToken: sessionToken,
-    expiresAt: expiresAt,
+    sessionToken: sessionToken,
     identityToken: childIdentityToken,
-    sessionToken: sessionToken
+    expiresAt: expiresAt
   });
 }
 
@@ -760,11 +739,8 @@ function handleGetProfiles(req, res, body, uuid, name) {
   sendJson(res, 200, {
     profiles: [{
       uuid: uuid,
-      UUID: uuid,
       username: name,
-      Username: name,
-      entitlements: ["game.base"],
-      Entitlements: ["game.base"]
+      entitlements: ["game.base"]
     }]
   });
 }

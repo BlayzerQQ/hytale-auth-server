@@ -62,7 +62,10 @@ class HytaleAvatarViewer {
     this.camera.position.set(0, 0.6, 2.0);
     this.camera.lookAt(0, 0.5, 0);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: this.options.alpha !== false  // Enable alpha by default for transparency support
+    });
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.container.appendChild(this.renderer.domElement);

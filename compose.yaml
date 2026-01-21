@@ -83,3 +83,22 @@ services:
         condition: service_healthy
       traefik:
         condition: service_started
+
+  # Head Pre-render Worker - background service to pre-render avatar heads
+  # Uses Puppeteer with headless Chrome to render 3D heads and cache them
+  head-prerender:
+    build: ./head-prerender
+    environment:
+      AUTH_SERVER_URL: "http://hytale-auth:3000"
+      REDIS_URL: "redis://kvrocks:6666"
+      HEAD_CACHE_DIR: "/app/data/head-cache"
+      BG_COLOR: "black"
+      BATCH_SIZE: "5"
+      LOOP_INTERVAL: "60000"
+    volumes:
+      # Share the same data directory as hytale-auth for cache access
+      - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      kvrocks:
+        condition: service_healthy

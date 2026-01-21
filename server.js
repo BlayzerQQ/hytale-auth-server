@@ -4,7 +4,12 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const { execSync } = require('child_process');
+const cluster = require('cluster');
+const os = require('os');
 const Redis = require('ioredis');
+
+// Cluster configuration - use multiple workers for better performance
+const NUM_WORKERS = parseInt(process.env.WORKERS) || Math.min(os.cpus().length, 4);
 
 // Configuration via environment variables
 const PORT = process.env.PORT || 3000;
@@ -14,8 +19,8 @@ const ASSETS_PATH = process.env.ASSETS_PATH || '/app/assets/Assets.zip';
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
 
-// Admin session tokens (in-memory, reset on restart)
-const adminTokens = new Set();
+// Admin token TTL in seconds (24 hours)
+const ADMIN_TOKEN_TTL = 86400;
 
 // Redis client with connection handling
 const redis = new Redis(REDIS_URL, {
@@ -51,6 +56,7 @@ const REDIS_KEYS = {
   PLAYER_SERVER: 'player:', // player:{uuid} -> current server audience
   USERNAME: 'username:',    // username:{uuid} -> username string
   SERVER_NAME: 'servername:', // servername:{audience} -> server display name
+  ADMIN_TOKEN: 'admintoken:', // admintoken:{token} -> "1" (just existence check)
 };
 
 // Session TTL in seconds (10 hours)
@@ -144,7 +150,8 @@ async function initializeRedis() {
     await migrateFileDataToRedis();
 
     // Rebuild server mappings from existing sessions
-    await rebuildServerMappings();
+    // Disabled - only needed once after migration or after data loss
+    // await rebuildServerMappings();
   } catch (e) {
     console.error('Failed to connect to Redis:', e.message);
     console.log('Server will continue but data will not persist!');
@@ -291,6 +298,13 @@ async function registerSession(sessionToken, uuid, username, serverAudience = nu
 
       // Track player-server association if we know the server
       if (serverAudience) {
+        // Remove player from previous server if they were on a different one
+        const previousServer = await redis.get(`${REDIS_KEYS.PLAYER_SERVER}${uuid}`);
+        if (previousServer && previousServer !== serverAudience) {
+          await redis.srem(`${REDIS_KEYS.SERVER_PLAYERS}${previousServer}`, uuid);
+          console.log(`Player ${uuid} moved from server ${previousServer} to ${serverAudience}`);
+        }
+
         await redis.sadd(`${REDIS_KEYS.SERVER_PLAYERS}${serverAudience}`, uuid);
         await redis.setex(`${REDIS_KEYS.PLAYER_SERVER}${uuid}`, SESSION_TTL, serverAudience);
       }
@@ -321,6 +335,13 @@ async function registerAuthGrant(authGrant, playerUuid, playerName, serverAudien
     try {
       // Store auth grant with TTL
       await redis.setex(`${REDIS_KEYS.AUTH_GRANT}${authGrant}`, SESSION_TTL, JSON.stringify(grantData));
+
+      // Remove player from previous server if they were on a different one
+      const previousServer = await redis.get(`${REDIS_KEYS.PLAYER_SERVER}${playerUuid}`);
+      if (previousServer && previousServer !== serverAudience) {
+        await redis.srem(`${REDIS_KEYS.SERVER_PLAYERS}${previousServer}`, playerUuid);
+        console.log(`Player ${playerUuid} moved from server ${previousServer} to ${serverAudience}`);
+      }
 
       // Track player-server association
       await redis.sadd(`${REDIS_KEYS.SERVER_PLAYERS}${serverAudience}`, playerUuid);
@@ -588,7 +609,7 @@ async function persistUsername(uuid, name) {
 
 // Get user data from Redis
 async function getUserData(uuid) {
-  if (!redisConnected) return userData[uuid] || {};
+  if (!redisConnected) return {};
 
   try {
     const data = await redis.get(`${REDIS_KEYS.USER}${uuid}`);
@@ -966,7 +987,7 @@ function generateSessionToken(uuid) {
   });
 }
 
-function handleRequest(req, res) {
+async function handleRequest(req, res) {
   const timestamp = new Date().toISOString();
   // Skip logging for telemetry endpoints (too noisy)
   if (!req.url.includes('/telemetry')) {
@@ -987,6 +1008,13 @@ function handleRequest(req, res) {
   // Parse URL
   const url = new URL(req.url, `http://${req.headers.host}`);
 
+  // Handle binary uploads (like head-cache) before consuming body as string
+  const headCacheMatch = url.pathname.match(/^\/avatar\/([^/]+)\/head-cache$/);
+  if (headCacheMatch && req.method === 'POST') {
+    handleHeadImageCache(req, res, headCacheMatch[1], url);
+    return;
+  }
+
   // Collect body for POST requests
   let body = '';
   req.on('data', chunk => { body += chunk; });
@@ -1000,7 +1028,7 @@ function handleRequest(req, res) {
   });
 }
 
-function routeRequest(req, res, url, body, headers) {
+async function routeRequest(req, res, url, body, headers) {
   const urlPath = url.pathname;
 
   // Extract UUID and name from body first
@@ -1130,7 +1158,7 @@ function routeRequest(req, res, url, body, headers) {
   }
 
   if (urlPath === '/game-session/refresh') {
-    handleGameSessionRefresh(req, res, body, uuid, name, headers);
+    await handleGameSessionRefresh(req, res, body, uuid, name, headers);
     return;
   }
 
@@ -1218,18 +1246,27 @@ function routeRequest(req, res, url, body, headers) {
 
   // Admin login endpoint (no auth required)
   if (urlPath === '/admin/login' && req.method === 'POST') {
-    handleAdminLogin(req, res, body);
+    await handleAdminLogin(req, res, body);
     return;
   }
 
   // Admin verify endpoint (check if token is valid)
   if (urlPath === '/admin/verify') {
     const token = headers['x-admin-token'] || url.searchParams.get('token');
-    if (token && adminTokens.has(token)) {
-      sendJson(res, 200, { valid: true });
-    } else {
-      sendJson(res, 401, { valid: false });
+    if (token && redisConnected) {
+      try {
+        const exists = await redis.exists(REDIS_KEYS.ADMIN_TOKEN + token);
+        if (exists) {
+          // Refresh TTL on valid token
+          await redis.expire(REDIS_KEYS.ADMIN_TOKEN + token, ADMIN_TOKEN_TTL);
+          sendJson(res, 200, { valid: true });
+          return;
+        }
+      } catch (e) {
+        console.error('Redis error checking admin token:', e.message);
+      }
     }
+    sendJson(res, 401, { valid: false });
     return;
   }
 
@@ -1239,10 +1276,24 @@ function routeRequest(req, res, url, body, headers) {
     return;
   }
 
+  // Test page for head embed
+  if (urlPath === '/test/head') {
+    handleTestHeadPage(req, res);
+    return;
+  }
+
   // Protected admin API routes - require token
   if (urlPath.startsWith('/admin/')) {
     const token = headers['x-admin-token'];
-    if (!token || !adminTokens.has(token)) {
+    let validToken = false;
+    if (token && redisConnected) {
+      try {
+        validToken = await redis.exists(REDIS_KEYS.ADMIN_TOKEN + token);
+      } catch (e) {
+        console.error('Redis error checking admin token:', e.message);
+      }
+    }
+    if (!validToken) {
       sendJson(res, 401, { error: 'Unauthorized. Please login at /admin' });
       return;
     }
@@ -1267,8 +1318,14 @@ function routeRequest(req, res, url, body, headers) {
   }
 
   // Server name registration - POST /admin/server-name
-  if (urlPath === '/admin/server-name' && method === 'POST') {
+  if (urlPath === '/admin/server-name' && req.method === 'POST') {
     handleSetServerName(req, res, body);
+    return;
+  }
+
+  // Get list of player UUIDs that need head pre-rendering
+  if (urlPath === '/admin/prerender-queue') {
+    await handlePrerenderQueue(req, res);
     return;
   }
 
@@ -1460,7 +1517,7 @@ function handleGameSessionNew(req, res, body, uuid, name) {
 }
 
 // Refresh existing game session
-function handleGameSessionRefresh(req, res, body, uuid, name, headers) {
+async function handleGameSessionRefresh(req, res, body, uuid, name, headers) {
   console.log('game-session/refresh:', uuid, name);
 
   let oldSessionToken = null;
@@ -1499,8 +1556,13 @@ function handleGameSessionRefresh(req, res, body, uuid, name, headers) {
   const sessionToken = generateSessionToken(uuid);
   const expiresAt = new Date(Date.now() + 36000 * 1000).toISOString();
 
-  // Get server from old session or player mapping
-  const serverAudience = playerServer.get(uuid) || null;
+  // Get server from player mapping in Redis
+  let serverAudience = null;
+  if (redisConnected) {
+    try {
+      serverAudience = await redis.get(`${REDIS_KEYS.PLAYER_SERVER}${uuid}`);
+    } catch (e) {}
+  }
 
   // Register new session
   registerSession(sessionToken, uuid, name, serverAudience);
@@ -1599,6 +1661,67 @@ async function handleSetServerName(req, res, body) {
   }
 }
 
+// Get list of player UUIDs that need head pre-rendering
+// Returns UUIDs of active players whose head cache doesn't exist
+async function handlePrerenderQueue(req, res) {
+  const bgParam = 'black'; // Default background used in admin page
+
+  // Count total cached files on disk
+  let totalCachedFiles = 0;
+  try {
+    if (fs.existsSync(HEAD_CACHE_DIR)) {
+      const files = fs.readdirSync(HEAD_CACHE_DIR);
+      totalCachedFiles = files.filter(f => f.endsWith('.png')).length;
+    }
+  } catch (e) {
+    // Ignore errors reading cache dir
+  }
+
+  if (!redisConnected) {
+    sendJson(res, 200, { uuids: [], totalCachedFiles, error: 'Redis not connected' });
+    return;
+  }
+
+  try {
+    // Get all active player UUIDs from all servers
+    const serverKeys = [];
+    let cursor = '0';
+    do {
+      const [newCursor, keys] = await redis.scan(cursor, 'MATCH', `${REDIS_KEYS.SERVER_PLAYERS}*`, 'COUNT', 500);
+      cursor = newCursor;
+      serverKeys.push(...keys);
+    } while (cursor !== '0');
+
+    // Collect all player UUIDs
+    const allUuids = new Set();
+    for (const key of serverKeys) {
+      const uuids = await redis.smembers(key);
+      uuids.forEach(uuid => allUuids.add(uuid));
+    }
+
+    // Filter to only those without cached head images
+    const uncachedUuids = [];
+    for (const uuid of allUuids) {
+      const cacheKey = `${uuid}_${bgParam}`;
+      const cached = getHeadCacheFromDisk(cacheKey);
+      if (!cached) {
+        uncachedUuids.push(uuid);
+      }
+    }
+
+    sendJson(res, 200, {
+      uuids: uncachedUuids,
+      total: allUuids.size,
+      cached: allUuids.size - uncachedUuids.length,
+      uncached: uncachedUuids.length,
+      totalCachedFiles
+    });
+  } catch (e) {
+    console.error('Error getting prerender queue:', e.message);
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
 // Admin stats API - detailed statistics
 // Lightweight admin stats - just counts, no player lists
 async function handleAdminStats(req, res) {
@@ -1678,11 +1801,12 @@ async function handleAdminServers(req, res, url) {
     } while (cursor !== '0');
 
     // Step 2: Get player counts for all servers (SCARD is O(1), very fast)
-    const serverCounts = await Promise.all(serverKeys.map(async (key) => ({
+    // Filter out 'hytale-client' which contains ALL players with valid tokens (too large to display)
+    const serverCounts = (await Promise.all(serverKeys.map(async (key) => ({
       key,
       audience: key.replace(REDIS_KEYS.SERVER_PLAYERS, ''),
       count: await redis.scard(key)
-    })));
+    })))).filter(s => s.audience !== 'hytale-client');
 
     // Step 3: Sort by player count descending (most active first)
     serverCounts.sort((a, b) => b.count - a.count);
@@ -1750,7 +1874,7 @@ async function handleAdminServers(req, res, url) {
 }
 
 // Admin login - POST /admin/login
-function handleAdminLogin(req, res, body) {
+async function handleAdminLogin(req, res, body) {
   const { password } = body;
 
   if (!password) {
@@ -1765,14 +1889,19 @@ function handleAdminLogin(req, res, body) {
 
   // Generate a random token
   const token = crypto.randomBytes(32).toString('hex');
-  adminTokens.add(token);
 
-  // Clean up old tokens if too many (memory leak prevention)
-  if (adminTokens.size > 100) {
-    const tokensArray = Array.from(adminTokens);
-    for (let i = 0; i < 50; i++) {
-      adminTokens.delete(tokensArray[i]);
+  // Store in Redis with TTL (shared across all workers)
+  if (redisConnected) {
+    try {
+      await redis.setex(REDIS_KEYS.ADMIN_TOKEN + token, ADMIN_TOKEN_TTL, '1');
+    } catch (e) {
+      console.error('Redis error storing admin token:', e.message);
+      sendJson(res, 500, { error: 'Failed to create session' });
+      return;
     }
+  } else {
+    sendJson(res, 503, { error: 'Redis not available' });
+    return;
   }
 
   console.log(`Admin login successful, token: ${token.substring(0, 8)}...`);
@@ -1890,6 +2019,26 @@ function handleAdminDashboard(req, res) {
       border-radius: 15px;
       font-size: 0.85em;
       display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+    .player-tag .player-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.3);
+      flex-shrink: 0;
+      overflow: hidden;
+      border: none;
+    }
+    .player-tag .player-avatar-img {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+    }
+    .player-tag .player-info {
+      display: flex;
       flex-direction: column;
       gap: 2px;
     }
@@ -1929,32 +2078,6 @@ function handleAdminDashboard(req, res) {
     .server-ttl {
       font-size: 0.8em;
       margin-left: 10px;
-    }
-    .all-players-server {
-      background: rgba(138, 43, 226, 0.1);
-      border-color: rgba(138, 43, 226, 0.3);
-    }
-    .all-players-badge {
-      background: #8a2be2;
-      color: #fff;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 0.7em;
-      font-weight: bold;
-      margin-right: 8px;
-    }
-    .collapse-toggle {
-      color: #00d4ff;
-      cursor: pointer;
-      font-size: 0.85em;
-      padding: 5px 0;
-      margin-top: 5px;
-    }
-    .collapse-toggle:hover {
-      text-decoration: underline;
-    }
-    .players-list.collapsed {
-      display: none;
     }
     .pagination {
       display: flex;
@@ -2132,6 +2255,14 @@ function handleAdminDashboard(req, res) {
         <div class="stat-value" id="userCount">-</div>
         <div class="stat-label">Registered Users</div>
       </div>
+      <div class="stat-card">
+        <div class="stat-value" id="prerenderCached">-</div>
+        <div class="stat-label">Heads Cached</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="prerenderQueue">-</div>
+        <div class="stat-label">Prerender Queue</div>
+      </div>
     </div>
 
     <div class="section">
@@ -2170,6 +2301,7 @@ function handleAdminDashboard(req, res) {
     let currentPage = 1;
     const pageLimit = 10;
     let adminToken = localStorage.getItem('adminToken');
+    let savedPassword = localStorage.getItem('adminPassword');
 
     // Auth helper - adds token to fetch requests
     async function authFetch(url, options = {}) {
@@ -2178,22 +2310,57 @@ function handleAdminDashboard(req, res) {
       options.headers['X-Admin-Token'] = adminToken;
       const res = await fetch(url, options);
       if (res.status === 401) {
-        // Token invalid, force re-login
+        // Token invalid, try auto-login with saved password
+        if (savedPassword && await tryAutoLogin()) {
+          // Retry the request with new token
+          options.headers['X-Admin-Token'] = adminToken;
+          return fetch(url, options);
+        }
         logout();
         throw new Error('Session expired');
       }
       return res;
     }
 
+    // Try to login with saved password
+    async function tryAutoLogin() {
+      if (!savedPassword) return false;
+      try {
+        const res = await fetch('/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: savedPassword })
+        });
+        const data = await res.json();
+        if (res.ok && data.token) {
+          adminToken = data.token;
+          localStorage.setItem('adminToken', adminToken);
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+
     // Check if we're authenticated
     async function checkAuth() {
-      if (!adminToken) return false;
+      if (!adminToken) {
+        // Try auto-login with saved password
+        if (savedPassword) {
+          return await tryAutoLogin();
+        }
+        return false;
+      }
       try {
         const res = await fetch('/admin/verify', {
           headers: { 'X-Admin-Token': adminToken }
         });
         const data = await res.json();
-        return data.valid === true;
+        if (data.valid === true) return true;
+        // Token invalid, try auto-login
+        if (savedPassword) {
+          return await tryAutoLogin();
+        }
+        return false;
       } catch (e) {
         return false;
       }
@@ -2203,6 +2370,7 @@ function handleAdminDashboard(req, res) {
     document.getElementById('loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const password = document.getElementById('loginPassword').value;
+      const rememberMe = document.getElementById('rememberMe')?.checked ?? true;
       const errorDiv = document.getElementById('loginError');
       errorDiv.textContent = '';
 
@@ -2217,6 +2385,10 @@ function handleAdminDashboard(req, res) {
         if (res.ok && data.token) {
           adminToken = data.token;
           localStorage.setItem('adminToken', adminToken);
+          if (rememberMe) {
+            savedPassword = password;
+            localStorage.setItem('adminPassword', password);
+          }
           showDashboard();
         } else {
           errorDiv.textContent = data.error || 'Login failed';
@@ -2229,7 +2401,9 @@ function handleAdminDashboard(req, res) {
     // Logout handler
     function logout() {
       adminToken = null;
+      savedPassword = null;
       localStorage.removeItem('adminToken');
+      localStorage.removeItem('adminPassword');
       document.getElementById('loginOverlay').classList.remove('hidden');
       document.getElementById('mainContent').classList.add('hidden');
       document.getElementById('logoutBtn').classList.add('hidden');
@@ -2310,6 +2484,17 @@ function handleAdminDashboard(req, res) {
         // Fetch servers (paginated)
         await loadServers(currentPage);
 
+        // Fetch prerender queue stats
+        try {
+          const prerenderRes = await authFetch('/admin/prerender-queue');
+          const prerender = await prerenderRes.json();
+          document.getElementById('prerenderCached').textContent = prerender.totalCachedFiles || 0;
+          document.getElementById('prerenderQueue').textContent = prerender.uncached || 0;
+        } catch (e) {
+          document.getElementById('prerenderCached').textContent = '?';
+          document.getElementById('prerenderQueue').textContent = '?';
+        }
+
         // Update timestamp
         document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
 
@@ -2335,28 +2520,29 @@ function handleAdminDashboard(req, res) {
               ? Math.min(...server.players.map(p => p.ttl || 0))
               : 0;
             const serverTtlStatus = getTtlStatus(minTtl);
-            const isAllPlayers = server.audience === 'hytale-client';
             const serverId = 'server-' + server.audience.replace(/[^a-zA-Z0-9]/g, '');
 
             return \`
-            <div class="server-card\${isAllPlayers ? ' all-players-server' : ''}">
+            <div class="server-card">
               <div class="server-header">
                 <span class="server-name">
-                  \${isAllPlayers ? '<span class="all-players-badge">ALL ONLINE</span> All Players (Valid Tokens)' : (server.name || server.audience || 'Unknown Server')}
+                  \${server.name || server.audience || 'Unknown Server'}
                   <span class="ttl-badge \${serverTtlStatus.class} server-ttl">\${serverTtlStatus.text}</span>
                 </span>
                 <span class="player-count">\${server.playerCount} player\${server.playerCount !== 1 ? 's' : ''}</span>
               </div>
-              \${server.name && !isAllPlayers ? \`<div class="server-audience">ID: \${server.audience}</div>\` : ''}
+              \${server.name ? \`<div class="server-audience">ID: \${server.audience}</div>\` : ''}
               \${server.players && server.players.length > 0 ? \`
-                \${isAllPlayers ? \`<div class="collapse-toggle" onclick="togglePlayers('\${serverId}')">Show/Hide Players</div>\` : ''}
-                <div class="players-list\${isAllPlayers ? ' collapsed' : ''}" id="\${serverId}">
+                <div class="players-list" id="\${serverId}">
                   \${server.players.map(p => {
                     const ttlStatus = getTtlStatus(p.ttl || 0);
                     return \`
                     <div class="player-tag">
-                      <span class="player-name">\${p.username} <span class="ttl-badge \${ttlStatus.class}">\${ttlStatus.text}</span></span>
-                      <span class="uuid">\${p.uuid.substring(0, 8)}...</span>
+                      <iframe class="player-avatar" src="/avatar/\${p.uuid}/head?bg=black" loading="lazy" title="\${p.username}"></iframe>
+                      <div class="player-info">
+                        <span class="player-name">\${p.username} <span class="ttl-badge \${ttlStatus.class}">\${ttlStatus.text}</span></span>
+                        <span class="uuid">\${p.uuid.substring(0, 8)}...</span>
+                      </div>
                     </div>
                   \`}).join('')}
                 </div>
@@ -2389,19 +2575,11 @@ function handleAdminDashboard(req, res) {
       loadServers(page);
     }
 
-    // Toggle players list visibility
-    function togglePlayers(serverId) {
-      const el = document.getElementById(serverId);
-      if (el) {
-        el.classList.toggle('collapsed');
-      }
-    }
-
     // Initial load
     refreshData();
 
-    // Auto-refresh every 30 seconds
-    setInterval(refreshData, 30000);
+    // Auto-refresh every 60 seconds
+    setInterval(refreshData, 60000);
 
     // Server name form handler
     document.getElementById('serverNameForm').addEventListener('submit', async (e) => {
@@ -2654,6 +2832,9 @@ async function handleSkin(req, res, body, uuid, name) {
   existingData.lastUpdated = new Date().toISOString();
   await saveUserData(uuid, existingData);
 
+  // Invalidate head image cache since skin changed
+  invalidateHeadCache(uuid);
+
   res.writeHead(204);
   res.end();
 }
@@ -2767,7 +2948,7 @@ function sendJson(res, status, data, req = null) {
 
 // Handle avatar viewer routes
 function handleAvatarRoutes(req, res, urlPath, body = {}) {
-  // Parse UUID from path: /avatar/{uuid} or /avatar/{uuid}/model
+  // Parse UUID from path: /avatar/{uuid} or /avatar/{uuid}/model or /avatar/{uuid}/head
   const pathParts = urlPath.split('/').filter(p => p);
 
   if (pathParts.length < 2) {
@@ -2776,7 +2957,7 @@ function handleAvatarRoutes(req, res, urlPath, body = {}) {
   }
 
   const uuid = pathParts[1];
-  const action = pathParts[2]; // 'model' or undefined (serve HTML)
+  const action = pathParts[2]; // 'model', 'head', or undefined (serve HTML)
 
   if (action === 'model') {
     // Return model data for Three.js rendering
@@ -2784,6 +2965,12 @@ function handleAvatarRoutes(req, res, urlPath, body = {}) {
   } else if (action === 'preview') {
     // Handle preview with custom skin data (POST)
     handleAvatarPreview(req, res, uuid, body);
+  } else if (action === 'head') {
+    // Return embeddable head (cached image or render page)
+    serveHeadEmbed(req, res, uuid);
+  } else if (action === 'head-cache' && req.method === 'POST') {
+    // Receive rendered head image for caching
+    handleHeadImageCache(req, res, uuid);
   } else {
     // Serve the HTML viewer page
     serveAvatarViewer(req, res, uuid);
@@ -2806,6 +2993,514 @@ function serveAvatarViewer(req, res, uuid) {
 
   // Serve embedded viewer
   const html = generateAvatarViewerHtml(uuid);
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end(html);
+}
+
+// Head image cache - disk-only storage (no memory)
+const HEAD_CACHE_TTL = 3600000; // 1 hour cache TTL
+const HEAD_CACHE_DIR = path.join(DATA_DIR, 'head-cache');
+
+// Initialize head cache directory
+function initHeadCache() {
+  try {
+    if (!fs.existsSync(HEAD_CACHE_DIR)) {
+      fs.mkdirSync(HEAD_CACHE_DIR, { recursive: true });
+      console.log(`Created head cache directory: ${HEAD_CACHE_DIR}`);
+    }
+  } catch (err) {
+    console.error('Error initializing head cache:', err.message);
+  }
+}
+
+// Get cached head image from disk (returns null if not found or expired)
+// Returns { data: Buffer, mtime: Date } or null
+function getHeadCacheFromDisk(cacheKey) {
+  try {
+    const filePath = path.join(HEAD_CACHE_DIR, `${cacheKey}.png`);
+    if (!fs.existsSync(filePath)) return null;
+
+    const stats = fs.statSync(filePath);
+    const age = Date.now() - stats.mtimeMs;
+
+    // Expired - delete and return null
+    if (age > HEAD_CACHE_TTL) {
+      fs.unlinkSync(filePath);
+      return null;
+    }
+
+    return {
+      data: fs.readFileSync(filePath),
+      mtime: stats.mtime
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+// Save head image to disk
+function saveHeadCacheToDisk(cacheKey, data) {
+  try {
+    const filePath = path.join(HEAD_CACHE_DIR, `${cacheKey}.png`);
+    fs.writeFileSync(filePath, data);
+  } catch (err) {
+    console.error('Error saving head cache to disk:', err.message);
+  }
+}
+
+// Delete head cache files for a user
+function deleteHeadCacheFromDisk(uuid) {
+  try {
+    const files = fs.readdirSync(HEAD_CACHE_DIR);
+    for (const file of files) {
+      if (file.startsWith(uuid + '_')) {
+        fs.unlinkSync(path.join(HEAD_CACHE_DIR, file));
+      }
+    }
+  } catch (err) {
+    console.error('Error deleting head cache from disk:', err.message);
+  }
+}
+
+// Initialize cache on module load
+initHeadCache();
+
+// Serve embeddable head viewer - either cached image or render page
+// Supports query params: ?bg=transparent|white|black|#hexcolor&nocache=1
+async function serveHeadEmbed(req, res, uuid) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const bgParam = url.searchParams.get('bg') || 'black';
+  const noCache = url.searchParams.get('nocache') === '1';
+  const cacheKey = `${uuid}_${bgParam}`;
+
+  // Check disk cache first (unless nocache is set)
+  if (!noCache) {
+    const cached = getHeadCacheFromDisk(cacheKey);
+    if (cached) {
+      const lastModified = cached.mtime.toUTCString();
+      const etag = `"${cacheKey}-${cached.mtime.getTime()}"`;
+
+      // Check If-None-Match (ETag) header
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304);
+        res.end();
+        return;
+      }
+
+      // Check If-Modified-Since header
+      const ifModifiedSince = req.headers['if-modified-since'];
+      if (ifModifiedSince && new Date(ifModifiedSince) >= cached.mtime) {
+        res.writeHead(304);
+        res.end();
+        return;
+      }
+
+      // Serve cached PNG image from disk with proper caching headers
+      res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Content-Length': cached.data.length,
+        'Cache-Control': 'public, max-age=3600',
+        'ETag': etag,
+        'Last-Modified': lastModified,
+        'X-Cache': 'HIT'
+      });
+      res.end(cached.data);
+      return;
+    }
+  }
+
+  // No cache, serve HTML that will render and cache the image
+  const html = generateHeadEmbedHtml(uuid, bgParam);
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end(html);
+}
+
+// Receive rendered head image from client and cache it
+function handleHeadImageCache(req, res, uuid, url) {
+  if (!url) url = new URL(req.url, `http://${req.headers.host}`);
+  const bgParam = url.searchParams.get('bg') || 'black';
+  const cacheKey = `${uuid}_${bgParam}`;
+  console.log(`Caching head image for ${cacheKey}`);
+
+  let body = [];
+  req.on('data', chunk => body.push(chunk));
+  req.on('end', () => {
+    try {
+      const data = Buffer.concat(body);
+
+      // Validate it's a PNG (starts with PNG signature)
+      if (data.length > 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) {
+        // Save to disk only (no memory cache)
+        saveHeadCacheToDisk(cacheKey, data);
+        sendJson(res, 200, { success: true, cached: true });
+      } else {
+        sendJson(res, 400, { error: 'Invalid PNG data' });
+      }
+    } catch (err) {
+      sendJson(res, 500, { error: err.message });
+    }
+  });
+}
+
+// Invalidate head cache for a user (call when skin changes)
+function invalidateHeadCache(uuid) {
+  deleteHeadCacheFromDisk(uuid);
+}
+
+// Generate minimal HTML for head-only 3D renderer (for embedding)
+// bgParam: 'transparent', 'white', 'black', or hex color like '#ff0000'
+function generateHeadEmbedHtml(uuid, bgParam = 'transparent') {
+  // Parse background parameter
+  let cssBg = 'transparent';
+  let threeColor = '0x000000';
+  let threeAlpha = '0'; // 0 = transparent
+
+  if (bgParam === 'transparent') {
+    cssBg = 'transparent';
+    threeAlpha = '0';
+  } else if (bgParam === 'white') {
+    cssBg = '#ffffff';
+    threeColor = '0xffffff';
+    threeAlpha = '1';
+  } else if (bgParam === 'black') {
+    cssBg = '#000000';
+    threeColor = '0x000000';
+    threeAlpha = '1';
+  } else if (bgParam.startsWith('#')) {
+    // Custom hex color
+    cssBg = bgParam;
+    threeColor = '0x' + bgParam.slice(1);
+    threeAlpha = '1';
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Head - ${uuid}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: ${cssBg}; }
+    #canvas-container { width: 100%; height: 100%; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="/assets/avatar.js"></script>
+  <script>
+    const UUID = '${uuid}';
+    const BG_COLOR = ${threeColor};
+    const BG_ALPHA = ${threeAlpha};
+
+    async function init() {
+      const container = document.getElementById('canvas-container');
+
+      const viewer = new HytaleAvatarViewer(container, {
+        autoRotate: false,
+        showGrid: false,
+        backgroundColor: BG_COLOR,
+        alpha: true  // Enable transparency support
+      });
+
+      viewer.init();
+
+      // Set background based on parameters
+      viewer.renderer.setClearColor(BG_COLOR, BG_ALPHA);
+      if (BG_ALPHA === 0) {
+        viewer.scene.background = null;
+      } else {
+        viewer.scene.background = new THREE.Color(BG_COLOR);
+      }
+
+      try {
+        await viewer.loadAvatar(UUID);
+
+        // Camera position for head view (facing camera)
+        // Pos: (0, 1.1, -1.0), LookAt Y: 1.0, FOV: 40
+        viewer.camera.position.set(0, 1.1, -1.0);
+        viewer.camera.lookAt(0, 1.0, 0);
+        viewer.camera.fov = 40;
+        viewer.camera.updateProjectionMatrix();
+
+        // Disable animation for static head
+        viewer.animationEnabled = false;
+        viewer.autoRotate = false;
+        await viewer.setAnimation(null);
+
+        // Render once
+        viewer.renderer.render(viewer.scene, viewer.camera);
+
+        // Cache the rendered image on the server
+        cacheRenderedImage(viewer.renderer.domElement);
+      } catch (err) {
+        console.error('Head embed error:', err);
+      }
+    }
+
+    // Send rendered image to server for caching
+    async function cacheRenderedImage(canvas) {
+      try {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        await fetch('/avatar/' + UUID + '/head-cache?bg=${bgParam}', {
+          method: 'POST',
+          body: blob,
+          headers: { 'Content-Type': 'image/png' }
+        });
+      } catch (err) {
+        console.log('Cache upload failed (non-critical):', err);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>`;
+}
+
+// Test page for head embed - styled like admin player badges
+function handleTestHeadPage(req, res) {
+  const testUuid = '62ab5527-60d1-4031-942f-b292b5144b4f';
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Head Embed Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      min-height: 100vh;
+      padding: 40px;
+      color: #e0e0e0;
+    }
+    h1 {
+      color: #00d4ff;
+      margin-bottom: 30px;
+      font-size: 1.8em;
+    }
+    h2 {
+      color: #888;
+      margin: 30px 0 15px;
+      font-size: 1.1em;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .section {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    /* Player tag styles - same as admin */
+    .players-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .player-tag {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 6px 12px;
+      border-radius: 15px;
+      font-size: 0.85em;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+    }
+    .player-tag .player-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.3);
+      flex-shrink: 0;
+      overflow: hidden;
+      border: none;
+    }
+    .player-tag .player-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .player-tag .player-name {
+      color: #fff;
+      font-weight: 500;
+    }
+    .player-tag .uuid {
+      color: #666;
+      font-size: 0.7em;
+      font-family: monospace;
+    }
+    .ttl-badge {
+      font-size: 0.7em;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-left: 5px;
+    }
+    .ttl-fresh { background: rgba(0, 255, 136, 0.25); color: #7fdfb0; }
+
+    /* Larger player tag variant */
+    .player-tag-large {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 12px 20px;
+      border-radius: 20px;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 15px;
+    }
+    .player-tag-large .player-avatar {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.3);
+      flex-shrink: 0;
+      overflow: hidden;
+      border: none;
+    }
+    .player-tag-large .player-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .player-tag-large .player-name {
+      color: #fff;
+      font-weight: 600;
+      font-size: 1.2em;
+    }
+    .player-tag-large .uuid {
+      color: #666;
+      font-size: 0.8em;
+      font-family: monospace;
+    }
+
+    /* Direct iframe preview */
+    .iframe-preview {
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .iframe-box {
+      text-align: center;
+    }
+    .iframe-box label {
+      display: block;
+      margin-bottom: 10px;
+      color: #888;
+      font-size: 0.9em;
+    }
+    .iframe-box iframe {
+      border: 1px dashed rgba(255,255,255,0.2);
+      background: rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Head Embed Test</h1>
+
+    <div class="section">
+      <h2>Background variants (64x64)</h2>
+      <p style="color: #888; margin-bottom: 15px; font-size: 0.9em;">Use ?bg=transparent|white|black|#hexcolor</p>
+      <div class="iframe-preview">
+        <div class="iframe-box">
+          <label>?bg=transparent (default)</label>
+          <iframe src="/avatar/${testUuid}/head?bg=transparent" width="64" height="64" frameborder="0"></iframe>
+        </div>
+        <div class="iframe-box">
+          <label>?bg=white</label>
+          <iframe src="/avatar/${testUuid}/head?bg=white" width="64" height="64" frameborder="0" style="background: #333;"></iframe>
+        </div>
+        <div class="iframe-box">
+          <label>?bg=black</label>
+          <iframe src="/avatar/${testUuid}/head?bg=black" width="64" height="64" frameborder="0"></iframe>
+        </div>
+        <div class="iframe-box">
+          <label>?bg=#1a1a2e (dark blue)</label>
+          <iframe src="/avatar/${testUuid}/head?bg=%231a1a2e" width="64" height="64" frameborder="0"></iframe>
+        </div>
+        <div class="iframe-box">
+          <label>?bg=#00d4ff (cyan)</label>
+          <iframe src="/avatar/${testUuid}/head?bg=%2300d4ff" width="64" height="64" frameborder="0"></iframe>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Size variants (transparent bg)</h2>
+      <div class="iframe-preview">
+        <div class="iframe-box">
+          <label>128x128</label>
+          <iframe src="/avatar/${testUuid}/head" width="128" height="128" frameborder="0"></iframe>
+        </div>
+        <div class="iframe-box">
+          <label>64x64</label>
+          <iframe src="/avatar/${testUuid}/head" width="64" height="64" frameborder="0"></iframe>
+        </div>
+        <div class="iframe-box">
+          <label>40x40 (admin badge)</label>
+          <iframe src="/avatar/${testUuid}/head" width="40" height="40" frameborder="0"></iframe>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Player badge (admin style - 40px avatar)</h2>
+      <div class="players-list">
+        <div class="player-tag">
+          <iframe class="player-avatar" src="/avatar/${testUuid}/head" loading="lazy" title="TestPlayer"></iframe>
+          <div class="player-info">
+            <span class="player-name">TestPlayer <span class="ttl-badge ttl-fresh">9h 45m</span></span>
+            <span class="uuid">${testUuid.substring(0, 8)}...</span>
+          </div>
+        </div>
+        <div class="player-tag">
+          <iframe class="player-avatar" src="/avatar/${testUuid}/head" loading="lazy" title="AnotherPlayer"></iframe>
+          <div class="player-info">
+            <span class="player-name">AnotherPlayer <span class="ttl-badge ttl-fresh">8h 30m</span></span>
+            <span class="uuid">${testUuid.substring(0, 8)}...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Large player badge (64px avatar)</h2>
+      <div class="player-tag-large">
+        <iframe class="player-avatar" src="/avatar/${testUuid}/head" loading="lazy" title="TestPlayer"></iframe>
+        <div class="player-info">
+          <span class="player-name">TestPlayer</span>
+          <span class="uuid">${testUuid}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" style="background: #ffffff;">
+      <h2 style="color: #333;">On white background</h2>
+      <div class="players-list">
+        <div class="player-tag" style="background: rgba(0,0,0,0.1);">
+          <iframe class="player-avatar" src="/avatar/${testUuid}/head" loading="lazy" title="TestPlayer"></iframe>
+          <div class="player-info">
+            <span class="player-name" style="color: #333;">TestPlayer</span>
+            <span class="uuid" style="color: #999;">${testUuid.substring(0, 8)}...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+
   res.writeHead(200, { 'Content-Type': 'text/html' });
   res.end(html);
 }
@@ -3179,7 +3874,7 @@ function generateAvatarViewerHtml(uuid) {
   </style>
 </head>
 <body>
-  <div class="container">
+  <div class="container" id="main-container">
     <h1>Hytale Avatar Viewer</h1>
     <div class="uuid">${uuid}</div>
     <div id="canvas-container">
@@ -3554,7 +4249,8 @@ function generateAvatarViewerHtml(uuid) {
 
     function initThreeJS() {
       const container = document.getElementById('canvas-container');
-      const width = container.clientWidth, height = container.clientHeight;
+      const width = container.clientWidth;
+      const height = container.clientHeight;
 
       scene = new THREE.Scene();
       scene.background = new THREE.Color(0x1a1a2e);
@@ -4865,22 +5561,45 @@ async function startServer() {
 
   const server = http.createServer(handleRequest);
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Redis: ${redisConnected ? 'connected' : 'NOT CONNECTED (data will not persist!)'}`);
-    console.log(`Endpoints:`);
-    console.log(`  - sessions.${DOMAIN}`);
-    console.log(`  - account-data.${DOMAIN}`);
-    console.log(`  - telemetry.${DOMAIN}`);
-    console.log(`  - Avatar viewer: /avatar/{uuid}`);
-    console.log(`  - Avatar customizer: /customizer/{uuid}`);
-    console.log(`  - Cosmetics list: /cosmetics/list`);
-    console.log(`  - Asset extraction: /asset/{path}`);
-    console.log(`  - Admin dashboard: /admin`);
-    console.log(`  - Admin API: /admin/sessions, /admin/stats`);
+    const workerId = cluster.isWorker ? `Worker ${cluster.worker.id}` : 'Main';
+    console.log(`[${workerId}] Server running on port ${PORT}`);
+    console.log(`[${workerId}] Redis: ${redisConnected ? 'connected' : 'NOT CONNECTED'}`);
+    // Only show endpoints once (first worker or single process)
+    if (!cluster.isWorker || cluster.worker.id === 1) {
+      console.log(`Endpoints:`);
+      console.log(`  - sessions.${DOMAIN}`);
+      console.log(`  - account-data.${DOMAIN}`);
+      console.log(`  - telemetry.${DOMAIN}`);
+      console.log(`  - Avatar viewer: /avatar/{uuid}`);
+      console.log(`  - Avatar customizer: /customizer/{uuid}`);
+      console.log(`  - Cosmetics list: /cosmetics/list`);
+      console.log(`  - Asset extraction: /asset/{path}`);
+      console.log(`  - Admin dashboard: /admin`);
+      console.log(`  - Admin API: /admin/sessions, /admin/stats`);
+    }
   });
 }
 
-startServer().catch(err => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// Cluster mode: primary spawns workers, workers handle requests
+if (cluster.isPrimary && NUM_WORKERS > 1) {
+  console.log(`Primary ${process.pid} starting ${NUM_WORKERS} workers...`);
+
+  for (let i = 0; i < NUM_WORKERS; i++) {
+    cluster.fork();
+  }
+
+  cluster.on('exit', (worker, code, signal) => {
+    console.log(`Worker ${worker.process.pid} died (${signal || code}). Restarting...`);
+    cluster.fork();
+  });
+
+  cluster.on('online', (worker) => {
+    console.log(`Worker ${worker.process.pid} is online`);
+  });
+} else {
+  // Worker process or single-process mode
+  startServer().catch(err => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

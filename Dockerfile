@@ -10,7 +10,7 @@ RUN mkdir -p /app/data /app/assets
 
 # Copy package files and install dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev
 
 # Copy server and static assets
 COPY server.js ./

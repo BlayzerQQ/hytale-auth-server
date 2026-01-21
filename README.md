@@ -6,12 +6,27 @@ This server handles authentication requests from both the game client (via the F
 
 > **Warning**: This is an experimental project for educational purposes. Use at your own risk.
 
-## Preview
+## Screenshots
 
+<details>
+<summary>Click to view screenshots</summary>
+
+### Admin Dashboard
+![Admin Dashboard](.github/admin_page.png)
+
+### Avatar Viewer
 ![Avatar Viewer](.github/avatar_dab_pose.png)
+
+### Character Customizer
 ![Customizer](.github/customizer.png)
 
+### Head Embed Test
+![Head Embed](.github/embed_test.png)
+
+### Video Demo
 [![Avatar Viewer Video](https://img.youtube.com/vi/aDqYWr8rcwg/0.jpg)](https://youtube.com/shorts/aDqYWr8rcwg)
+
+</details>
 
 **Live Demo:** [Avatar Customizer](https://sessions.sanasol.ws/customizer/03fbfdef-9c4a-4eef-bd10-63fa96427133)
 
@@ -120,8 +135,10 @@ curl https://sessions.yourdomain/health
 |----------|---------|-------------|
 | `DOMAIN` | `sanasol.ws` | Your 10-character domain |
 | `PORT` | `3000` | Server port |
-| `DATA_DIR` | `/app/data` | Directory for persistent data (keys, user data) |
+| `DATA_DIR` | `/app/data` | Directory for persistent data |
 | `ASSETS_PATH` | `/app/assets/Assets.zip` | Path to Assets.zip for cosmetics |
+| `REDIS_URL` | `redis://localhost:6379` | Redis/Kvrocks connection URL |
+| `ADMIN_PASSWORD` | `changeme` | Password for admin dashboard |
 
 ### Persistent Data
 
@@ -129,19 +146,24 @@ The server stores the following data in the `data/` directory:
 
 - `jwt_keys.json` - Ed25519 key pair for JWT signing (auto-generated)
 - `user_data.json` - User skin/cosmetic preferences
+- `head-cache/` - Cached head embed images
 
 **Important**: Keep `jwt_keys.json` backed up! If you lose it, all existing tokens become invalid.
 
-## Avatar Viewer & Customizer (Research Prototype)
+## Features
 
-> **Note**: This is a research prototype and does not work fully. It's included for educational purposes to demonstrate how Hytale's character models and cosmetics system works.
+### Admin Dashboard
 
-The server includes an experimental web-based avatar viewer and customizer that reads from `Assets.zip` to render 3D character models using Three.js.
+Access at `https://sessions.yourdomain/admin` (requires `ADMIN_PASSWORD`).
+
+- View active sessions and connected players
+- Monitor server statistics
+- Set custom display names for game servers
+- View player avatars with embedded head previews
 
 ### Avatar Viewer
 
 View any user's avatar in 3D with animations:
-
 ```
 https://sessions.yourdomain/avatar/{uuid}
 ```
@@ -152,10 +174,9 @@ Features:
 - Skin tone and body type support
 - Cosmetic parts rendering (hair, clothes, accessories)
 
-### Customizer
+### Avatar Customizer
 
-Interactive character customization interface:
-
+Interactive character customization:
 ```
 https://sessions.yourdomain/customizer/{uuid}
 ```
@@ -166,40 +187,136 @@ Features:
 - Color variations for supported items
 - Animation preview
 
-### How It Works
+### Head Embed
 
-The viewer parses Hytale's asset format:
-- `.blockymodel` - 3D model definitions with bone hierarchy
-- `.blockyanim` - Animation keyframe data
-- Greyscale textures with gradient-based coloring
-- Character cosmetic configuration from `CharacterCreator/*.json`
+Embeddable player head images for use in admin panels, forums, etc:
+```
+https://sessions.yourdomain/avatar/{uuid}/head?bg=black
+```
 
-This is a reverse-engineering research project to understand Hytale's asset format.
+Query parameters:
+- `bg` - Background color: `transparent`, `white`, `black`, or hex color (e.g., `#ff0000`)
+- `nocache` - Set to `1` to bypass cache
+
+Features:
+- Server-side caching with disk persistence
+- Proper HTTP caching headers (ETag, Last-Modified)
+- Multiple background color options
+
+Test page available at: `https://sessions.yourdomain/test/head`
+
+### Head Pre-render Worker
+
+A background service that pre-renders avatar heads for all active players using headless Chrome with Puppeteer. This ensures head images are cached before users request them, improving load times on the admin dashboard.
+
+Features:
+- Runs in a separate Docker container
+- Uses WebGL software rendering (SwiftShader) - no GPU required
+- Processes players in batches to avoid overloading the server
+- Shares cache directory with main auth server
+
+Configuration (environment variables):
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_SERVER_URL` | `http://hytale-auth:3000` | Auth server URL for rendering |
+| `REDIS_URL` | `redis://kvrocks:6666` | Redis/Kvrocks connection |
+| `HEAD_CACHE_DIR` | `/app/data/head-cache` | Cache directory path |
+| `BG_COLOR` | `black` | Background color for renders |
+| `BATCH_SIZE` | `5` | Heads to render per batch |
+| `LOOP_INTERVAL` | `60000` | Milliseconds between render loops |
 
 ## Endpoints
 
-The server implements the following Hytale authentication endpoints:
+<details>
+<summary>Click to view all endpoints</summary>
 
-| Endpoint | Description |
-|----------|-------------|
-| `/.well-known/jwks.json` | JWKS for JWT signature verification |
-| `/game-session/new` | Create new game session |
-| `/game-session/child` | Create child session (used by launcher) |
-| `/game-session/refresh` | Refresh session tokens |
-| `/server-join/auth-grant` | Authorization grant for server connection |
-| `/server-join/auth-token` | Token exchange with certificate binding |
-| `/my-account/game-profile` | Get user profile |
-| `/my-account/cosmetics` | Get unlocked cosmetics |
-| `/my-account/skin` | Save user skin preferences |
-| `/avatar/{uuid}` | 3D avatar viewer (research prototype) |
-| `/avatar/{uuid}/model` | Avatar model data API |
-| `/customizer/{uuid}` | Avatar customizer UI (research prototype) |
-| `/cosmetics/list` | List all available cosmetics |
-| `/asset/{path}` | Serve assets from Assets.zip |
+### Authentication (Client → Auth Server)
 
-## Local Development (without HTTPS)
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/.well-known/jwks.json` | GET | JWKS for JWT signature verification |
+| `/game-session/new` | POST | Create new game session |
+| `/game-session/child` | POST | Create child session (used by launcher) |
+| `/game-session/refresh` | POST | Refresh session tokens |
+| `/game-session` | DELETE | Delete/logout session |
 
-For local testing, use the simple compose file:
+### Server Join Flow (Client ↔ Server ↔ Auth Server)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/game-session/authorize` | POST | Authorization grant for server connection |
+| `/server-join/auth-grant` | POST | Alias for authorization grant |
+| `/server-join/auth-token` | POST | Token exchange with certificate binding |
+| `/game-session/exchange` | POST | Alias for token exchange |
+
+### Account Data
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/my-account/game-profile` | GET/POST | Get/update user profile |
+| `/my-account/cosmetics` | GET | Get unlocked cosmetics |
+| `/my-account/skin` | POST | Save user skin preferences |
+| `/my-account/get-launcher-data` | GET | Get launcher-specific data |
+| `/my-account/get-profiles` | GET | Get user profiles |
+
+### Profile Lookup (Game Server → Auth Server)
+
+Used by game servers for commands like `/ban`, `/kick`, etc.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/profile/uuid/{uuid}` | GET | Look up player profile by UUID |
+| `/profile/username/{username}` | GET | Look up player profile by username |
+
+**Headers for username lookup:**
+- `X-Server-Audience` - Server audience ID (returns players on that server first)
+
+### Avatar & Cosmetics
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/avatar/{uuid}` | GET | 3D avatar viewer page |
+| `/avatar/{uuid}/head` | GET | Embeddable head image (PNG) |
+| `/avatar/{uuid}/model` | GET | Avatar model data API |
+| `/customizer/{uuid}` | GET | Avatar customizer UI |
+| `/cosmetics/list` | GET | List all available cosmetics |
+| `/cosmetics/item/{category}/{itemId}` | GET | Get specific cosmetic item |
+| `/asset/{path}` | GET | Serve assets from Assets.zip |
+| `/test/head` | GET | Head embed test page |
+
+### Admin Dashboard (Protected)
+
+Requires `ADMIN_PASSWORD` environment variable. Token stored in browser localStorage.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/admin` | GET | Admin dashboard HTML page |
+| `/admin/login` | POST | Login with password, returns token |
+| `/admin/verify` | GET | Verify if token is valid |
+| `/admin/stats` | GET | Lightweight server statistics |
+| `/admin/servers` | GET | Paginated server list with players |
+| `/admin/sessions` | GET | All active sessions |
+| `/admin/server-name` | POST | Set display name for a server |
+
+**Protected endpoints require header:** `X-Admin-Token: {token}`
+
+**Query params for `/admin/servers`:**
+- `page` - Page number (default: 1)
+- `limit` - Items per page (default: 10, max: 50)
+
+### Utility
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/bugs/create` | POST | Bug report endpoint (no-op) |
+| `/feedback/create` | POST | Feedback endpoint (no-op) |
+
+</details>
+
+## Local Development
+
+For local testing without HTTPS:
 
 ```bash
 docker compose -f compose.simple.yaml up -d
@@ -252,6 +369,18 @@ Make sure the auth server's Ed25519 keys are persisted. If the keys change, exis
 1. Check that `Assets.zip` is in the `assets/` directory
 2. Check the server logs for cosmetics loading messages
 3. Verify the zip file is valid: `unzip -l assets/Assets.zip | grep Cosmetics`
+
+## Technical Notes
+
+### Asset Format (Research)
+
+The viewer parses Hytale's asset format:
+- `.blockymodel` - 3D model definitions with bone hierarchy
+- `.blockyanim` - Animation keyframe data
+- Greyscale textures with gradient-based coloring
+- Character cosmetic configuration from `CharacterCreator/*.json`
+
+This is a reverse-engineering research project to understand Hytale's asset format.
 
 ## License
 

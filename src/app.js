@@ -12,6 +12,7 @@ const { sendJson } = require('./utils/response');
 
 // Route handlers
 const routes = require('./routes');
+const dleRoutes = require('./routes/dle');
 
 /**
  * Main request handler
@@ -349,6 +350,18 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   // Telemetry endpoint
   if (urlPath.includes('/telemetry') || urlPath.includes('/analytics') || urlPath.includes('/event')) {
     sendJson(res, 200, { success: true, received: true });
+    return;
+  }
+
+  // DLE аутентификация
+  if (urlPath === '/auth/dle' || urlPath === '/auth/dle/login') {
+    await dleRoutes.handleDleAuth(req, res, body);
+    return;
+  }
+
+// Проверка существования пользователя DLE
+  if (urlPath === '/auth/dle/check') {
+    await dleRoutes.handleDleCheck(req, res, body);
     return;
   }
 

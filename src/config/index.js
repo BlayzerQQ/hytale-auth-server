@@ -28,6 +28,20 @@ const config = {
   // Cache
   headCacheTtl: 3600000, // 1 hour in milliseconds
 
+  // DLE Database
+  dleDb: {
+    host: process.env.DLE_DB_HOST || 'localhost',
+    port: parseInt(process.env.DLE_DB_PORT) || 3306,
+    user: process.env.DLE_DB_USER || 'dle_user',
+    password: process.env.DLE_DB_PASSWORD || 'dle_password',
+    database: process.env.DLE_DB_NAME || 'dle_database'
+  },
+
+  // DLE Auth settings
+  maxFailedAttempts: parseInt(process.env.MAX_FAILED_ATTEMPTS) || 5,
+  lockTimeMinutes: parseInt(process.env.LOCK_TIME_MINUTES) || 5,
+  minUsernameLength: parseInt(process.env.MIN_USERNAME_LENGTH) || 3,
+
   // Redis key prefixes
   redisKeys: {
     SESSION: 'session:',
@@ -38,6 +52,8 @@ const config = {
     USERNAME: 'username:',
     SERVER_NAME: 'servername:',
     ADMIN_TOKEN: 'admintoken:',
+    DLE_USER: 'dle_user:', // Кэш пользователей DLE
+    FAILED_LOGIN: 'failed_login:', // Неудачные попытки
   },
 };
 

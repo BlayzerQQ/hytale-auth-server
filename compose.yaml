@@ -58,6 +58,16 @@ services:
       # Redis/Kvrocks connection (Kvrocks default port is 6666)
       REDIS_URL: "redis://kvrocks:6666"
       ADMIN_PASSWORD: "changeme"
+      # DLE Database
+      DLE_DB_HOST: ${DLE_DB_HOST:-mysql}
+      DLE_DB_PORT: ${DLE_DB_PORT:-3306}
+      DLE_DB_USER: ${DLE_DB_USER:-dle_user}
+      DLE_DB_PASSWORD: ${DLE_DB_PASSWORD:-dle_password}
+      DLE_DB_NAME: ${DLE_DB_NAME:-dle_database}
+      # DLE Auth settings
+      MAX_FAILED_ATTEMPTS: ${MAX_FAILED_ATTEMPTS:-5}
+      LOCK_TIME_MINUTES: ${LOCK_TIME_MINUTES:-5}
+      MIN_USERNAME_LENGTH: ${MIN_USERNAME_LENGTH:-3}
     volumes:
       - ./data:/app/data
       - ./assets:/app/assets

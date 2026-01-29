@@ -30,7 +30,7 @@ import java.util.zip.*;
 public class DualAuthPatcher {
 
     private static final String F2P_DOMAIN = System.getenv("HYTALE_AUTH_DOMAIN") != null
-        ? System.getenv("HYTALE_AUTH_DOMAIN") : "auth.sanasol.ws";
+        ? System.getenv("HYTALE_AUTH_DOMAIN") : "auth.finemin.ru";
 
     private static final String OFFICIAL_SESSION_URL = "https://sessions.hytale.com";
     private static final String OFFICIAL_ISSUER = "https://sessions.hytale.com";

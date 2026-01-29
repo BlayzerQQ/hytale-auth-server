@@ -3,6 +3,7 @@ const auth = require('../services/auth');
 const storage = require('../services/storage');
 const { sendJson } = require('../utils/response');
 const crypto = require('crypto');
+const config = require('../config');
 
 /**
  * DLE аутентификация - проверка логина и пароля

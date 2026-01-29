@@ -155,6 +155,18 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
+  // DLE аутентификация
+  if (urlPath === '/auth/dle' || urlPath === '/auth/dle/login') {
+    await dleRoutes.handleDleAuth(req, res, body);
+    return;
+  }
+
+// Проверка существования пользователя DLE
+  if (urlPath === '/auth/dle/check') {
+    await dleRoutes.handleDleCheck(req, res, body);
+    return;
+  }
+
   // ====== Game session endpoints ======
 
   // Game session endpoints
@@ -350,18 +362,6 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
   // Telemetry endpoint
   if (urlPath.includes('/telemetry') || urlPath.includes('/analytics') || urlPath.includes('/event')) {
     sendJson(res, 200, { success: true, received: true });
-    return;
-  }
-
-  // DLE аутентификация
-  if (urlPath === '/auth/dle' || urlPath === '/auth/dle/login') {
-    await dleRoutes.handleDleAuth(req, res, body);
-    return;
-  }
-
-// Проверка существования пользователя DLE
-  if (urlPath === '/auth/dle/check') {
-    await dleRoutes.handleDleCheck(req, res, body);
     return;
   }
 

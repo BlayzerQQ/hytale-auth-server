@@ -9,8 +9,8 @@ const config = {
   workers: parseInt(process.env.WORKERS) || Math.min(os.cpus().length, 4),
 
   // Paths
-  dataDir: process.env.DATA_DIR || '/app/data',
-  assetsPath: process.env.ASSETS_PATH || '/app/assets/Assets.zip',
+  dataDir: './data',
+  assetsPath: './assets/Assets.zip',
 
   // Redis
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',

@@ -639,7 +639,7 @@ jobs:
           LOG_LINES_BEFORE=$(wc -l < server/server_no_tokens.log 2>/dev/null | tr -d ' ')
 
           echo "=== Test 1: Valid Token Connection (no-tokens server) ==="
-          echo "This should FAIL because server has no session token for auth grant"
+          echo "Testing DualAuth patcher auto-fetch feature - should auto-fetch server identity from F2P auth"
 
           python3 .github/scripts/mock-client.py \
             --host 127.0.0.1 \
@@ -652,12 +652,17 @@ jobs:
           sleep 2
 
           NEW_LOGS=$(tail -n +"$LOG_LINES_BEFORE" server/server_no_tokens.log)
-          # In no-tokens mode, we EXPECT "Server session token not available" error
-          if echo "$NEW_LOGS" | grep -qiE "Server session token not available|authentication unavailable"; then
-            echo "Test 1 PASSED - Server correctly reports missing session token"
+          # In no-tokens mode, DualAuth patcher should auto-fetch server identity from F2P auth
+          # This tests that the patcher's auto-fetch feature works correctly
+          if echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant|Sending AuthGrant"; then
+            echo "Test 1 PASSED - DualAuth patcher auto-fetched server identity"
+            if echo "$NEW_LOGS" | grep -qiE "F2P issuer detected|Replacing serverIdentityToken"; then
+              echo "  (Confirmed: F2P identity auto-fetch worked)"
+            fi
             TESTS_PASSED=$((TESTS_PASSED + 1))
-          elif echo "$NEW_LOGS" | grep -qiE "Successfully obtained authorization grant"; then
-            echo "::error::Test 1 FAILED - Auth grant should NOT succeed without server tokens"
+          elif echo "$NEW_LOGS" | grep -qiE "Server session token not available|authentication unavailable"; then
+            echo "Test 1 FAILED - DualAuth patcher should auto-fetch but got error"
+            echo "::error::DualAuth auto-fetch feature not working"
             TESTS_FAILED=$((TESTS_FAILED + 1))
           else
             echo "::warning::Test 1 INCONCLUSIVE"

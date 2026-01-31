@@ -4505,10 +4505,10 @@ public class DualAuthPatcher {
                     PLAYER_AUTHENTICATED_EVENT_CLASS, "<init>",
                     "(Ljava/util/UUID;Ljava/lang/String;ZLjava/lang/String;)V", false));
 
-                // .dispatch(event)
+                // .dispatch(event) - ReturnType erases to Object due to generics
                 eventDispatch.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
                     "com/hypixel/hytale/event/IEventDispatcher", "dispatch",
-                    "(Lcom/hypixel/hytale/event/IBaseEvent;)Lcom/hypixel/hytale/event/IBaseEvent;", true));
+                    "(Lcom/hypixel/hytale/event/IBaseEvent;)Ljava/lang/Object;", true));
 
                 // Pop the result (dispatch returns the event)
                 eventDispatch.add(new InsnNode(Opcodes.POP));

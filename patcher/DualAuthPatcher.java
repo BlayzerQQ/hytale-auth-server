@@ -62,17 +62,20 @@ public class DualAuthPatcher {
 
     // Package for injected classes
     private static final String AUTH_PKG = "com/hypixel/hytale/server/core/auth/";
+    private static final String EVENT_PKG = "com/hypixel/hytale/server/core/event/events/player/";
     private static final String JWKS_FETCHER_CLASS = AUTH_PKG + "DualJwksFetcher";
     private static final String CONTEXT_CLASS = AUTH_PKG + "DualAuthContext";
     private static final String HELPER_CLASS = AUTH_PKG + "DualAuthHelper";
     private static final String SERVER_IDENTITY_CLASS = AUTH_PKG + "DualServerIdentity";
     private static final String TOKEN_MANAGER_CLASS = AUTH_PKG + "DualServerTokenManager";
+    private static final String PLAYER_AUTHENTICATED_EVENT_CLASS = EVENT_PKG + "PlayerAuthenticatedEvent";
 
     // Target classes to patch
     private static final String JWT_VALIDATOR_CLASS = "com/hypixel/hytale/server/core/auth/JWTValidator";
     private static final String SESSION_SERVICE_CLIENT_CLASS = "com/hypixel/hytale/server/core/auth/SessionServiceClient";
     private static final String AUTH_GRANT_CLASS = "com/hypixel/hytale/protocol/packets/auth/AuthGrant";
     private static final String SERVER_AUTH_MANAGER_CLASS = "com/hypixel/hytale/server/core/auth/ServerAuthManager";
+    private static final String HANDSHAKE_HANDLER_CLASS = "com/hypixel/hytale/server/core/io/handlers/login/HandshakeHandler";
 
     private static int patchCount = 0;
     private static boolean verbose = true;
@@ -232,6 +235,9 @@ public class DualAuthPatcher {
         byte[] tokenManagerBytes = generateDualServerTokenManager();
         System.out.println("Generated: " + TOKEN_MANAGER_CLASS + ".class (dual token storage)");
 
+        byte[] playerAuthenticatedEventBytes = generatePlayerAuthenticatedEvent();
+        System.out.println("Generated: " + PLAYER_AUTHENTICATED_EVENT_CLASS + ".class (player authenticated event)");
+
         System.out.println();
         System.out.println("--- Phase 3: Writing Patched JAR ---");
         System.out.println();
@@ -245,6 +251,7 @@ public class DualAuthPatcher {
             addClassToJar(zipOut, JWKS_FETCHER_CLASS + ".class", fetcherBytes);
             addClassToJar(zipOut, SERVER_IDENTITY_CLASS + ".class", serverIdentityBytes);
             addClassToJar(zipOut, TOKEN_MANAGER_CLASS + ".class", tokenManagerBytes);
+            addClassToJar(zipOut, PLAYER_AUTHENTICATED_EVENT_CLASS + ".class", playerAuthenticatedEventBytes);
 
             // Set of generated class paths to skip when copying (in case JAR was already patched)
             Set<String> generatedClasses = new HashSet<>();
@@ -253,6 +260,7 @@ public class DualAuthPatcher {
             generatedClasses.add(JWKS_FETCHER_CLASS + ".class");
             generatedClasses.add(SERVER_IDENTITY_CLASS + ".class");
             generatedClasses.add(TOKEN_MANAGER_CLASS + ".class");
+            generatedClasses.add(PLAYER_AUTHENTICATED_EVENT_CLASS + ".class");
 
             // Copy all entries, replacing patched ones and skipping generated ones
             Enumeration<? extends ZipEntry> entries = zipIn.entries();
@@ -2669,6 +2677,15 @@ public class DualAuthPatcher {
                         System.out.println("  [JWTValidator] Patched fetchJwksFromService() to use DualJwksFetcher");
                     }
                 }
+
+                // Patch verifySignature to add extensive logging
+                if (method.name.equals("verifySignature")) {
+                    if (patchVerifySignature(method)) {
+                        modified = true;
+                        patchedMethods.add("JWTValidator.verifySignature");
+                        System.out.println("  [JWTValidator] Patched verifySignature() with enhanced logging");
+                    }
+                }
             }
 
             if (modified) {
@@ -2911,6 +2928,33 @@ public class DualAuthPatcher {
             "(Lcom/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey;)Lcom/nimbusds/jose/jwk/JWK;", false));
         code.add(new VarInsnNode(Opcodes.ASTORE, 8)); // jwk in var 8
 
+        // Log the key's kid and source
+        // System.out.println("[DualAuth] Processing key[" + i + "]: kid=" + key.kid + ", kty=" + key.kty + ", crv=" + key.crv);
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth] Processing key["));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 6)); // i
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode("]: kid="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // key (JwkKey)
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey", "kid", "Ljava/lang/String;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode(", kty="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // key (JwkKey)
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey", "kty", "Ljava/lang/String;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode(", crv="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // key (JwkKey)
+        code.add(new FieldInsnNode(Opcodes.GETFIELD, "com/hypixel/hytale/server/core/auth/SessionServiceClient$JwkKey", "crv", "Ljava/lang/String;"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
         // if (jwk != null) jwkList.add(jwk);
         code.add(new VarInsnNode(Opcodes.ALOAD, 8));
         LabelNode skipAdd = new LabelNode();
@@ -2987,6 +3031,324 @@ public class DualAuthPatcher {
     }
 
     /**
+     * Patch verifySignature to add extensive logging for debugging signature verification
+     *
+     * This replaces the entire method to:
+     * 1. Log the kid from the JWT token header
+     * 2. Log all available keys in the JWKS with their kids
+     * 3. Try ALL keys (not just the first matching kid) and log results
+     * 4. Return true if any key verifies the signature
+     */
+    private static boolean patchVerifySignature(MethodNode method) {
+        // Clear existing instructions
+        method.instructions.clear();
+        method.tryCatchBlocks.clear();
+
+        InsnList code = new InsnList();
+
+        // Method signature: private boolean verifySignature(SignedJWT signedJWT, JWKSet jwkSet)
+        // this = var 0, signedJWT = var 1, jwkSet = var 2
+
+        // === TRY BLOCK START ===
+        LabelNode tryStart = new LabelNode();
+        LabelNode tryEnd = new LabelNode();
+        LabelNode catchHandler = new LabelNode();
+        method.tryCatchBlocks.add(new TryCatchBlockNode(tryStart, tryEnd, catchHandler, "java/lang/Exception"));
+
+        code.add(tryStart);
+
+        // String keyId = signedJWT.getHeader().getKeyID();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1)); // signedJWT
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "getHeader",
+            "()Lcom/nimbusds/jose/JWSHeader;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/JWSHeader", "getKeyID",
+            "()Ljava/lang/String;", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 3)); // keyId in var 3
+
+        // System.out.println("[DualAuth] verifySignature() - Token kid: " + keyId);
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth] verifySignature() - Token kid: "));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3)); // keyId
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // List<JWK> keys = jwkSet.getKeys();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 2)); // jwkSet
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/JWKSet", "getKeys",
+            "()Ljava/util/List;", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 4)); // keys list in var 4
+
+        // System.out.println("[DualAuth] verifySignature() - JWKS contains " + keys.size() + " keys:");
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth] verifySignature() - JWKS contains "));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 4)); // keys
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "size", "()I", true));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode(" keys:"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // Iterator it = keys.iterator();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 4)); // keys
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "iterator", "()Ljava/util/Iterator;", true));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 5)); // iterator in var 5
+
+        // int keyIndex = 0;
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 6)); // keyIndex in var 6
+
+        // LOOP: Print info about each key
+        LabelNode printLoopStart = new LabelNode();
+        LabelNode printLoopEnd = new LabelNode();
+        code.add(printLoopStart);
+        code.add(new FrameNode(Opcodes.F_APPEND, 4,
+            new Object[]{"java/lang/String", "java/util/List", "java/util/Iterator", Opcodes.INTEGER}, 0, null));
+
+        // if (!it.hasNext()) break;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5)); // iterator
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, printLoopEnd));
+
+        // JWK jwk = (JWK) it.next();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5)); // iterator
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true));
+        code.add(new TypeInsnNode(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/JWK"));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 7)); // jwk in var 7
+
+        // System.out.println("[DualAuth]   Key[" + keyIndex + "]: kid=" + jwk.getKeyID() + ", type=" + jwk.getKeyType() + ", class=" + jwk.getClass().getSimpleName());
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth]   Key["));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 6)); // keyIndex
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode("]: kid="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // jwk
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/JWK", "getKeyID", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode(", type="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // jwk
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/JWK", "getKeyType", "()Lcom/nimbusds/jose/jwk/KeyType;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Object", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode(", class="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // jwk
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getSimpleName", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // keyIndex++;
+        code.add(new IincInsnNode(6, 1));
+        code.add(new JumpInsnNode(Opcodes.GOTO, printLoopStart));
+
+        code.add(printLoopEnd);
+        code.add(new FrameNode(Opcodes.F_CHOP, 1, null, 0, null)); // remove jwk var
+
+        // Now try to verify with each OctetKeyPair key
+        // First try keys with matching kid, then try all others
+
+        // System.out.println("[DualAuth] verifySignature() - Trying verification with all OctetKeyPair keys...");
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new LdcInsnNode("[DualAuth] verifySignature() - Trying verification with all OctetKeyPair keys..."));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // Iterator it2 = keys.iterator();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 4)); // keys
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/List", "iterator", "()Ljava/util/Iterator;", true));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 5)); // reuse var 5
+
+        // int keyIndex2 = 0;
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 6)); // reuse var 6
+
+        // LOOP: Try verification with each key
+        LabelNode verifyLoopStart = new LabelNode();
+        LabelNode verifyLoopEnd = new LabelNode();
+        LabelNode verifyLoopContinue = new LabelNode();
+        code.add(verifyLoopStart);
+        code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
+
+        // if (!it2.hasNext()) break;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5)); // iterator
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, verifyLoopEnd));
+
+        // JWK jwk2 = (JWK) it2.next();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 5)); // iterator
+        code.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true));
+        code.add(new TypeInsnNode(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/JWK"));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 7)); // jwk2 in var 7
+
+        // if (!(jwk2 instanceof OctetKeyPair)) continue;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // jwk2
+        code.add(new TypeInsnNode(Opcodes.INSTANCEOF, "com/nimbusds/jose/jwk/OctetKeyPair"));
+        code.add(new JumpInsnNode(Opcodes.IFEQ, verifyLoopContinue));
+
+        // OctetKeyPair okp = (OctetKeyPair) jwk2;
+        code.add(new VarInsnNode(Opcodes.ALOAD, 7)); // jwk2
+        code.add(new TypeInsnNode(Opcodes.CHECKCAST, "com/nimbusds/jose/jwk/OctetKeyPair"));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 8)); // okp in var 8
+
+        // System.out.println("[DualAuth]   Trying key[" + keyIndex2 + "] kid=" + okp.getKeyID() + "...");
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth]   Trying key["));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ILOAD, 6)); // keyIndex2
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(I)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode("] kid="));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 8)); // okp
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "getKeyID", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new LdcInsnNode("..."));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // Inner try-catch for verification
+        LabelNode innerTryStart = new LabelNode();
+        LabelNode innerTryEnd = new LabelNode();
+        LabelNode innerCatchHandler = new LabelNode();
+        method.tryCatchBlocks.add(new TryCatchBlockNode(innerTryStart, innerTryEnd, innerCatchHandler, "java/lang/Exception"));
+
+        code.add(innerTryStart);
+
+        // Ed25519Verifier verifier = new Ed25519Verifier(okp);
+        code.add(new TypeInsnNode(Opcodes.NEW, "com/nimbusds/jose/crypto/Ed25519Verifier"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 8)); // okp
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "com/nimbusds/jose/crypto/Ed25519Verifier", "<init>",
+            "(Lcom/nimbusds/jose/jwk/OctetKeyPair;)V", false));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9)); // verifier in var 9
+
+        // boolean valid = signedJWT.verify(verifier);
+        code.add(new VarInsnNode(Opcodes.ALOAD, 1)); // signedJWT
+        code.add(new VarInsnNode(Opcodes.ALOAD, 9)); // verifier
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jwt/SignedJWT", "verify",
+            "(Lcom/nimbusds/jose/JWSVerifier;)Z", false));
+        code.add(new VarInsnNode(Opcodes.ISTORE, 10)); // valid in var 10
+
+        code.add(innerTryEnd);
+
+        // if (valid) { log success and return true; }
+        code.add(new VarInsnNode(Opcodes.ILOAD, 10)); // valid
+        LabelNode notValid = new LabelNode();
+        code.add(new JumpInsnNode(Opcodes.IFEQ, notValid));
+
+        // System.out.println("[DualAuth]   SUCCESS! Signature verified with key kid=" + okp.getKeyID());
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth]   SUCCESS! Signature verified with key kid="));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 8)); // okp
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "com/nimbusds/jose/jwk/OctetKeyPair", "getKeyID", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        code.add(new InsnNode(Opcodes.ICONST_1));
+        code.add(new InsnNode(Opcodes.IRETURN));
+
+        code.add(notValid);
+        code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
+
+        // System.out.println("[DualAuth]   FAILED - signature did not match");
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new LdcInsnNode("[DualAuth]   FAILED - signature did not match"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+        code.add(new JumpInsnNode(Opcodes.GOTO, verifyLoopContinue));
+
+        // Inner catch handler
+        code.add(innerCatchHandler);
+        code.add(new FrameNode(Opcodes.F_SAME1, 0, null, 1, new Object[]{"java/lang/Exception"}));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 9)); // exception in var 9
+
+        // System.out.println("[DualAuth]   ERROR - " + ex.getMessage());
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth]   ERROR - "));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 9)); // exception
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "getMessage", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        code.add(verifyLoopContinue);
+        code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
+
+        // keyIndex2++;
+        code.add(new IincInsnNode(6, 1));
+        code.add(new JumpInsnNode(Opcodes.GOTO, verifyLoopStart));
+
+        code.add(verifyLoopEnd);
+        code.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
+
+        code.add(tryEnd);
+
+        // System.out.println("[DualAuth] verifySignature() - No key could verify the signature!");
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new LdcInsnNode("[DualAuth] verifySignature() - No key could verify the signature!"));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // return false;
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.IRETURN));
+
+        // Outer catch handler
+        code.add(catchHandler);
+        code.add(new FrameNode(Opcodes.F_FULL, 3,
+            new Object[]{JWT_VALIDATOR_CLASS, "com/nimbusds/jwt/SignedJWT", "com/nimbusds/jose/jwk/JWKSet"},
+            1, new Object[]{"java/lang/Exception"}));
+        code.add(new VarInsnNode(Opcodes.ASTORE, 3)); // exception in var 3
+
+        // System.out.println("[DualAuth] verifySignature() - Exception: " + ex.getMessage());
+        code.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+        code.add(new TypeInsnNode(Opcodes.NEW, "java/lang/StringBuilder"));
+        code.add(new InsnNode(Opcodes.DUP));
+        code.add(new LdcInsnNode("[DualAuth] verifySignature() - Exception: "));
+        code.add(new MethodInsnNode(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false));
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3)); // exception
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "getMessage", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false));
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+        // ex.printStackTrace();
+        code.add(new VarInsnNode(Opcodes.ALOAD, 3)); // exception
+        code.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Exception", "printStackTrace", "()V", false));
+
+        // return false;
+        code.add(new InsnNode(Opcodes.ICONST_0));
+        code.add(new InsnNode(Opcodes.IRETURN));
+
+        method.instructions = code;
+        method.maxStack = 6;
+        method.maxLocals = 11;
+
+        patchCount++;
+        return true;
+    }
+
+    /**
      * Patch HandshakeHandler to use DualServerTokenManager for server session tokens
      */
     private static byte[] patchHandshakeHandler(byte[] classBytes) {
@@ -3002,16 +3364,25 @@ public class DualAuthPatcher {
 
                 // Look for methods that might be getting server session token
                 // Common method names that might handle authentication
-                if (method.name.contains("Auth") || 
-                    method.name.contains("Token") || 
+                if (method.name.contains("Auth") ||
+                    method.name.contains("Token") ||
                     method.name.contains("Session") ||
                     method.name.contains("validate") ||
                     method.name.contains("request")) {
-                    
+
                     if (patchHandshakeHandlerMethod(method)) {
                         modified = true;
                         patchedMethods.add("HandshakeHandler." + method.name);
                         System.out.println("  [HandshakeHandler] Patched " + method.name + "() to use dual token manager");
+                    }
+                }
+
+                // Patch completeAuthentication to fire PlayerAuthenticatedEvent
+                if (method.name.equals("completeAuthentication")) {
+                    if (patchCompleteAuthentication(method, classNode.name)) {
+                        modified = true;
+                        patchedMethods.add("HandshakeHandler.completeAuthentication");
+                        System.out.println("  [HandshakeHandler] Patched completeAuthentication() to fire PlayerAuthenticatedEvent");
                     }
                 }
 
@@ -3943,5 +4314,213 @@ public class DualAuthPatcher {
         while ((len = is.read(buf)) != -1) {
             os.write(buf, 0, len);
         }
+    }
+
+    /**
+     * Generate PlayerAuthenticatedEvent class - Custom event fired after player authentication
+     *
+     * This event implements IEvent<Void> and contains:
+     * - UUID playerUuid - the authenticated player's UUID
+     * - String username - the authenticated player's username
+     * - boolean isF2P - whether the player authenticated via F2P backend
+     * - String issuer - the token issuer URL
+     */
+    private static byte[] generatePlayerAuthenticatedEvent() {
+        ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+
+        // public class PlayerAuthenticatedEvent implements IEvent<Void>
+        cw.visit(Opcodes.V17, Opcodes.ACC_PUBLIC,
+            PLAYER_AUTHENTICATED_EVENT_CLASS, null, "java/lang/Object",
+            new String[]{"com/hypixel/hytale/event/IEvent"});
+
+        // Fields
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL,
+            "playerUuid", "Ljava/util/UUID;", null, null).visitEnd();
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL,
+            "username", "Ljava/lang/String;", null, null).visitEnd();
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL,
+            "isF2P", "Z", null, null).visitEnd();
+        cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL,
+            "issuer", "Ljava/lang/String;", null, null).visitEnd();
+
+        // Constructor: public PlayerAuthenticatedEvent(UUID playerUuid, String username, boolean isF2P, String issuer)
+        MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>",
+            "(Ljava/util/UUID;Ljava/lang/String;ZLjava/lang/String;)V", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitFieldInsn(Opcodes.PUTFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "playerUuid", "Ljava/util/UUID;");
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitFieldInsn(Opcodes.PUTFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "username", "Ljava/lang/String;");
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ILOAD, 3);
+        mv.visitFieldInsn(Opcodes.PUTFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "isF2P", "Z");
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 4);
+        mv.visitFieldInsn(Opcodes.PUTFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "issuer", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(2, 5);
+        mv.visitEnd();
+
+        // public UUID getPlayerUuid()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "getPlayerUuid", "()Ljava/util/UUID;", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "playerUuid", "Ljava/util/UUID;");
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(1, 1);
+        mv.visitEnd();
+
+        // public String getUsername()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "getUsername", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "username", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(1, 1);
+        mv.visitEnd();
+
+        // public boolean isF2P()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "isF2P", "()Z", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "isF2P", "Z");
+        mv.visitInsn(Opcodes.IRETURN);
+        mv.visitMaxs(1, 1);
+        mv.visitEnd();
+
+        // public String getIssuer()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "getIssuer", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "issuer", "Ljava/lang/String;");
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(1, 1);
+        mv.visitEnd();
+
+        // public String toString()
+        mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "toString", "()Ljava/lang/String;", null, null);
+        mv.visitCode();
+        mv.visitTypeInsn(Opcodes.NEW, "java/lang/StringBuilder");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitLdcInsn("PlayerAuthenticatedEvent{playerUuid=");
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/StringBuilder", "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "playerUuid", "Ljava/util/UUID;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn(", username='");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "username", "Ljava/lang/String;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn("', isF2P=");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "isF2P", "Z");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Z)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn(", issuer='");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitFieldInsn(Opcodes.GETFIELD, PLAYER_AUTHENTICATED_EVENT_CLASS, "issuer", "Ljava/lang/String;");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitLdcInsn("'}");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "append", "(Ljava/lang/String;)Ljava/lang/StringBuilder;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/StringBuilder", "toString", "()Ljava/lang/String;", false);
+        mv.visitInsn(Opcodes.ARETURN);
+        mv.visitMaxs(3, 1);
+        mv.visitEnd();
+
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    /**
+     * Patch completeAuthentication method to fire PlayerAuthenticatedEvent
+     *
+     * Injects at the end of the method (before RETURN):
+     *   HytaleServer.get().getEventBus()
+     *       .dispatchFor(PlayerAuthenticatedEvent.class)
+     *       .dispatch(new PlayerAuthenticatedEvent(uuid, username, isF2P, issuer));
+     */
+    private static boolean patchCompleteAuthentication(MethodNode method, String ownerClass) {
+        InsnList insns = method.instructions;
+        boolean patched = false;
+
+        // Find RETURN instruction and insert event dispatch before it
+        for (AbstractInsnNode insn : insns.toArray()) {
+            if (insn.getOpcode() == Opcodes.RETURN) {
+                InsnList eventDispatch = new InsnList();
+
+                // Log event firing
+                eventDispatch.add(new FieldInsnNode(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;"));
+                eventDispatch.add(new LdcInsnNode("[DualAuth] Firing PlayerAuthenticatedEvent"));
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false));
+
+                // HytaleServer.get()
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    "com/hypixel/hytale/server/core/HytaleServer", "get",
+                    "()Lcom/hypixel/hytale/server/core/HytaleServer;", false));
+
+                // .getEventBus()
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "com/hypixel/hytale/server/core/HytaleServer", "getEventBus",
+                    "()Lcom/hypixel/hytale/event/EventBus;", false));
+
+                // .dispatchFor(PlayerAuthenticatedEvent.class)
+                eventDispatch.add(new LdcInsnNode(Type.getObjectType(PLAYER_AUTHENTICATED_EVENT_CLASS)));
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "com/hypixel/hytale/event/EventBus", "dispatchFor",
+                    "(Ljava/lang/Class;)Lcom/hypixel/hytale/event/IEventDispatcher;", false));
+
+                // Create new PlayerAuthenticatedEvent(uuid, username, isF2P, issuer)
+                eventDispatch.add(new TypeInsnNode(Opcodes.NEW, PLAYER_AUTHENTICATED_EVENT_CLASS));
+                eventDispatch.add(new InsnNode(Opcodes.DUP));
+
+                // Get uuid from this.auth.getUuid() - this.auth is PlayerAuthentication
+                eventDispatch.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
+                eventDispatch.add(new FieldInsnNode(Opcodes.GETFIELD, ownerClass, "auth",
+                    "Lcom/hypixel/hytale/server/core/auth/PlayerAuthentication;"));
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "com/hypixel/hytale/server/core/auth/PlayerAuthentication", "getUuid",
+                    "()Ljava/util/UUID;", false));
+
+                // Get username from this.authenticatedUsername field
+                eventDispatch.add(new VarInsnNode(Opcodes.ALOAD, 0)); // this
+                eventDispatch.add(new FieldInsnNode(Opcodes.GETFIELD, ownerClass, "authenticatedUsername",
+                    "Ljava/lang/String;"));
+
+                // Get isF2P from DualAuthContext.isF2P()
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    CONTEXT_CLASS, "isF2P", "()Z", false));
+
+                // Get issuer from DualAuthContext.getIssuer()
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+                    CONTEXT_CLASS, "getIssuer", "()Ljava/lang/String;", false));
+
+                // Call constructor
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
+                    PLAYER_AUTHENTICATED_EVENT_CLASS, "<init>",
+                    "(Ljava/util/UUID;Ljava/lang/String;ZLjava/lang/String;)V", false));
+
+                // .dispatch(event)
+                eventDispatch.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
+                    "com/hypixel/hytale/event/IEventDispatcher", "dispatch",
+                    "(Lcom/hypixel/hytale/event/IBaseEvent;)Lcom/hypixel/hytale/event/IBaseEvent;", true));
+
+                // Pop the result (dispatch returns the event)
+                eventDispatch.add(new InsnNode(Opcodes.POP));
+
+                // Insert before RETURN
+                insns.insertBefore(insn, eventDispatch);
+                patched = true;
+                patchCount++;
+                break; // Only patch first RETURN
+            }
+        }
+
+        return patched;
     }
 }

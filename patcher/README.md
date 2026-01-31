@@ -75,7 +75,7 @@ The patcher injects 5 helper classes into the server JAR:
 javac -cp "lib/*" DualAuthPatcher.java
 
 # Run
-java -cp ".:lib/*" DualAuthPatcher <input.jar> <output.jar>
+java -cp ".;lib/*" DualAuthPatcher <input.jar> <output.jar>
 
 # Or with custom domain
 HYTALE_AUTH_DOMAIN=my.server.io java -cp ".:lib/*" DualAuthPatcher input.jar output.jar

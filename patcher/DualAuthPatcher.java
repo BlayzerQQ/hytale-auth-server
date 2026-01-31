@@ -32,7 +32,7 @@ import java.util.zip.*;
 public class DualAuthPatcher {
 
     private static final String F2P_DOMAIN = System.getenv("HYTALE_AUTH_DOMAIN") != null
-        ? System.getenv("HYTALE_AUTH_DOMAIN") : "auth.finemin.ru";
+        ? System.getenv("HYTALE_AUTH_DOMAIN") : "finemin.ru";
 
     private static final String OFFICIAL_SESSION_URL = "https://sessions.hytale.com";
     private static final String OFFICIAL_ISSUER = "https://sessions.hytale.com";
@@ -42,13 +42,13 @@ public class DualAuthPatcher {
     private static final String F2P_SESSION_URL = "https://" + F2P_DOMAIN;
     private static final String F2P_ISSUER = F2P_SESSION_URL;
 
-    // Base domain for backward compatibility (accepts sessions.sanasol.ws, auth.sanasol.ws, etc.)
-    // Extracts "sanasol.ws" from "auth.sanasol.ws"
+    // Base domain for backward compatibility (accepts sessions.finemin.ru, auth.finemin.ru, etc.)
+    // Extracts "finemin.ru" from "auth.finemin.ru"
     private static final String F2P_BASE_DOMAIN = extractBaseDomain(F2P_DOMAIN);
 
     private static String extractBaseDomain(String domain) {
-        // auth.sanasol.ws -> sanasol.ws
-        // sanasol.ws -> sanasol.ws
+        // auth.finemin.ru -> finemin.ru
+        // finemin.ru -> finemin.ru
         int firstDot = domain.indexOf('.');
         if (firstDot > 0) {
             String afterFirstDot = domain.substring(firstDot + 1);
@@ -487,8 +487,8 @@ public class DualAuthPatcher {
         mv.visitInsn(Opcodes.IRETURN);
         mv.visitLabel(notOfficial);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
-        // Check if contains F2P base domain (sanasol.ws) for backward compatibility
-        // This accepts both auth.sanasol.ws (new) and sessions.sanasol.ws (old)
+        // Check if contains F2P base domain (finemin.ru) for backward compatibility
+        // This accepts both auth.finemin.ru (new) and sessions.finemin.ru (old)
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn(F2P_BASE_DOMAIN);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
@@ -499,7 +499,7 @@ public class DualAuthPatcher {
 
         // public static String getSessionUrl()
         // Returns the session URL based on current context's issuer
-        // For backward compatibility: returns the actual issuer (e.g., sessions.sanasol.ws)
+        // For backward compatibility: returns the actual issuer (e.g., sessions.finemin.ru)
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
             "getSessionUrl", "()Ljava/lang/String;", null, null);
         mv.visitCode();
@@ -530,7 +530,7 @@ public class DualAuthPatcher {
         mv.visitEnd();
 
         // public static String getSessionUrlForIssuer(String issuer)
-        // For backward compatibility: return the actual issuer URL (e.g., sessions.sanasol.ws)
+        // For backward compatibility: return the actual issuer URL (e.g., sessions.finemin.ru)
         // instead of hardcoded F2P URL, so requests go back to the original auth server
         mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
             "getSessionUrlForIssuer", "(Ljava/lang/String;)Ljava/lang/String;", null, null);
@@ -554,7 +554,7 @@ public class DualAuthPatcher {
         mv.visitLabel(returnIssuer);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
         // For F2P: return the issuer itself (it's the session URL)
-        // This preserves backward compatibility: sessions.sanasol.ws -> sessions.sanasol.ws
+        // This preserves backward compatibility: sessions.finemin.ru -> sessions.finemin.ru
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitInsn(Opcodes.ARETURN);
         mv.visitMaxs(1, 1);
@@ -897,7 +897,7 @@ public class DualAuthPatcher {
         mv.visitFrame(Opcodes.F_APPEND, 2, new Object[]{"java/lang/String", "java/lang/String"}, 0, null);
 
         // if (!issuer.contains(F2P_BASE_DOMAIN)) return; // Not F2P, keep hytale.com identity
-        // Use F2P_BASE_DOMAIN (sanasol.ws) for backward compatibility with sessions.sanasol.ws
+        // Use F2P_BASE_DOMAIN (finemin.ru) for backward compatibility with sessions.finemin.ru
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         mv.visitLdcInsn(F2P_BASE_DOMAIN);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
@@ -1009,7 +1009,7 @@ public class DualAuthPatcher {
      * Generate DualJwksFetcher class - Fetches JWKS from BOTH backends and merges keys
      *
      * This is the KEY class that enables dual auth - it fetches keys from both
-     * hytale.com and sanasol.ws, merges them, and returns the combined set.
+     * hytale.com and finemin.ru, merges them, and returns the combined set.
      */
     private static byte[] generateDualJwksFetcher() {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
@@ -1440,7 +1440,7 @@ public class DualAuthPatcher {
      * Generate DualServerIdentity class - Fetches and caches F2P server identity token
      *
      * This class allows the game server to have a separate identity for F2P clients.
-     * It fetches the server identity from the F2P auth server (sanasol.ws).
+     * It fetches the server identity from the F2P auth server (finemin.ru).
      */
     private static byte[] generateDualServerIdentity() {
         ClassWriter cw = new SafeClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
@@ -1936,7 +1936,7 @@ public class DualAuthPatcher {
      *
      * This class manages dual token sets:
      * - Official tokens: obtained via /auth login (from hytale.com)
-     * - F2P tokens: auto-fetched from sanasol.ws on startup
+     * - F2P tokens: auto-fetched from finemin.ru on startup
      *
      * MODIFIED: Changed from background thread to synchronous fetch during static init
      * to ensure tokens are available immediately at server startup.
@@ -1953,7 +1953,7 @@ public class DualAuthPatcher {
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
             "officialIdentityToken", "Ljava/lang/String;", null, null).visitEnd();
 
-        // Static fields for F2P tokens (auto-fetched from sanasol.ws)
+        // Static fields for F2P tokens (auto-fetched from finemin.ru)
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
             "f2pSessionToken", "Ljava/lang/String;", null, null).visitEnd();
         cw.visitField(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE,
@@ -2071,9 +2071,9 @@ public class DualAuthPatcher {
         mv.visitLabel(issuerNotNull2);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-        // Check if issuer is from F2P (contains sanasol.ws)
+        // Check if issuer is from F2P (contains finemin.ru)
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitLdcInsn("sanasol.ws");
+        mv.visitLdcInsn("finemin.ru");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
             "(Ljava/lang/CharSequence;)Z", false);
         Label issuerIsF2P = new Label();
@@ -2089,7 +2089,7 @@ public class DualAuthPatcher {
         mv.visitLabel(issuerIsF2P);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
 
-        // Issuer is not F2P (or doesn't contain sanasol.ws) - check if it's hytale.com
+        // Issuer is not F2P (or doesn't contain finemin.ru) - check if it's hytale.com
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn("hytale.com");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
@@ -2180,9 +2180,9 @@ public class DualAuthPatcher {
         mv.visitLabel(checkOfficial2);
         mv.visitFrame(Opcodes.F_SAME, 0, null, 0, null);
         
-        // Check if issuer is from F2P (contains sanasol.ws)
+        // Check if issuer is from F2P (contains finemin.ru)
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitLdcInsn("sanasol.ws");
+        mv.visitLdcInsn("finemin.ru");
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "contains",
             "(Ljava/lang/CharSequence;)Z", false);
         Label identityIssuerIsF2P = new Label();

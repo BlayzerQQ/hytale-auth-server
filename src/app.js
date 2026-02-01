@@ -13,6 +13,7 @@ const { sendJson } = require('./utils/response');
 // Route handlers
 const routes = require('./routes');
 const dleRoutes = require('./routes/dle');
+const otherRoutes = require('./routes/other');
 
 /**
  * Main request handler
@@ -161,9 +162,27 @@ async function routeRequest(req, res, url, urlPath, body, uuid, name, tokenScope
     return;
   }
 
-// Проверка существования пользователя DLE
+  // Проверка существования пользователя DLE
   if (urlPath === '/auth/dle/check') {
     await dleRoutes.handleDleCheck(req, res, body);
+    return;
+  }
+
+  // Проверка сессии для кастомной авторизации
+  if (urlPath === '/other/session-check' || urlPath === '/session/check') {
+    await otherRoutes.handleSessionCheck(req, res, body);
+    return;
+  }
+
+  // Вход для канала OTHER
+  if (urlPath === '/other/login') {
+    await otherRoutes.handleOtherLogin(req, res, body);
+    return;
+  }
+
+  // Регистрация для канала OTHER
+  if (urlPath === '/other/register') {
+    await otherRoutes.handleOtherRegister(req, res, body);
     return;
   }
 

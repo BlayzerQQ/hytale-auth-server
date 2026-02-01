@@ -791,11 +791,38 @@ function consumeDeviceCode(deviceCode) {
   return false;
 }
 
+/**
+ * Проверяет, есть ли активная сессия для UUID
+ */
+async function hasActiveSession(uuid) {
+  if (!isConnected()) return false;
+
+  try {
+    const sessionKeys = await redis.keys(`${KEYS.SESSION}*`);
+
+    for (const key of sessionKeys) {
+      const sessionJson = await redis.get(key);
+      if (sessionJson) {
+        const session = JSON.parse(sessionJson);
+        if (session.uuid === uuid) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  } catch (e) {
+    console.error('Error checking active session:', e.message);
+    return false;
+  }
+}
+
 module.exports = {
   // Sessions
   registerSession,
   registerAuthGrant,
   removeSession,
+  hasActiveSession,
 
   // Players/Servers
   getPlayersOnServer,
